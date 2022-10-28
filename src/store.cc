@@ -6,6 +6,7 @@ using namespace std;
 
 class store { 
 
+
 };
 
 int main(int argc, char** argv) {
