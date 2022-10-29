@@ -1,0 +1,28 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/home/sahil/Desktop/AOS-Assignments/Assignment3/project3-docker/test/product_queries_util.h
+string
+-
+iostream
+-
+vector
+-
+fstream
+-
+utility
+-
+
+/home/sahil/Desktop/AOS-Assignments/Assignment3/project3-docker/test/run_tests.cc
+product_queries_util.h
+/home/sahil/Desktop/AOS-Assignments/Assignment3/project3-docker/test/product_queries_util.h
+thread
+-
+algorithm
+-
+
