@@ -21,6 +21,8 @@ using store::ProductReply;
 using store::ProductInfo;
 using store::Store;
 
+using namespace std;
+
 class StoreImpl final : public Store::AsyncService{ 
 	public:
 	~StoreImpl() {
@@ -87,6 +89,12 @@ class StoreImpl final : public Store::AsyncService{
         // memory address of this instance as the uniquely identifying tag for
         // the event.
         status_ = FINISH;
+		//store::ProductReply productReply;
+		store::ProductInfo* productInfo = reply_.add_products();
+		productInfo->set_price(1.0);
+		productInfo->set_vendor_id("1");
+		
+		cout<<"here"<<endl;
         responder_.Finish(reply_, Status::OK, this);
       } else {
         GPR_ASSERT(status_ == FINISH);
