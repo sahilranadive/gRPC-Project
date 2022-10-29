@@ -1,6 +1,7 @@
 #include "threadpool.h"
 
 #include <iostream>
+#include <bits/stdc++.h>
 #include <grpc++/grpc++.h>
 #include "store.grpc.pb.h"
 #include "vendor.grpc.pb.h"
@@ -29,12 +30,15 @@ using grpc::ClientContext;
 
 using namespace std;
 
+class ThreadPool;
+
 class StoreImpl final : public Store::AsyncService{ 
 	public:
 	~StoreImpl() {
 		server_->Shutdown();
 		// Always shutdown the completion queue after the server.
 		cq_->Shutdown();
+    threadpool.Stop();
 	}
 
   int getVendorAddresses(std::string filename)
@@ -54,6 +58,8 @@ class StoreImpl final : public Store::AsyncService{
 	
 	void Run() {
     std::string server_address("0.0.0.0:50050");
+    
+    threadpool.Start(2);
 
     int errCode = getVendorAddresses("vendor_addresses.txt"); //harcoded filename for now
     if(errCode == -1)
@@ -91,8 +97,8 @@ class StoreImpl final : public Store::AsyncService{
     // Take in the "service" instance (in this case representing an asynchronous
     // server) and the completion queue "cq" used for asynchronous communication
     // with the gRPC runtime.
-    CallData(Store::AsyncService* service, ServerCompletionQueue* cq,std::vector<std::unique_ptr<Vendor::Stub>> *stubs)
-        : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE), stubs_(stubs) {
+    CallData(Store::AsyncService* service, ServerCompletionQueue* cq,std::vector<std::unique_ptr<Vendor::Stub>> *stubs, ThreadPool *threadpool)
+        : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE), stubs_(stubs), threadpool_(threadpool) {
       // Invoke the serving logic right away.
       Proceed();
     }
@@ -113,21 +119,17 @@ class StoreImpl final : public Store::AsyncService{
         // Spawn a new CallData instance to serve new clients while we process
         // the one for this CallData. The instance will deallocate itself as
         // part of its FINISH state.
-        new CallData(service_, cq_, stubs_);
+        new CallData(service_, cq_, stubs_, threadpool_);
 
         // The actual processing.
         
-        makeAsyncClientCalls();
+        threadpool_.QueueJob(&makeAsyncClientCalls);
+        //makeAsyncClientCalls();
         // And we are done! Let the gRPC runtime know we've finished, using the
         // memory address of this instance as the uniquely identifying tag for
         // the event.
         status_ = FINISH;
 
-        //store::ProductReply productReply;
-        store::ProductInfo* productInfo = reply_.add_products();
-        productInfo->set_price(1.0);
-        productInfo->set_vendor_id("1");
-		
 		    cout<<"here"<<endl;
         responder_.Finish(reply_, Status::OK, this);
       } else {
@@ -192,6 +194,8 @@ class StoreImpl final : public Store::AsyncService{
 
     void makeAsyncClientCalls()
     {
+       std::thread::id this_id = std::this_thread::get_id();
+      cout<<"I am thread: "<<this_id<<endl;
       std::thread thread_ = std::thread(&CallData::AsyncCompleteRpc, this);
       std::string  product_name = request_.product_name();
       for(auto stub=stubs_->begin();stub!=stubs_->end();stub++)
@@ -244,12 +248,13 @@ class StoreImpl final : public Store::AsyncService{
     // Let's implement a tiny state machine with the following states.
     enum CallStatus { CREATE, PROCESS, FINISH };
     CallStatus status_;  // The current serving state.
+    ThreadPool* threadpool_;
   }; // END of Call Data Class
 
   // This can be run in multiple threads if needed.
   void HandleRpcs() {
     // Spawn a new CallData instance to serve new clients.
-    new CallData(&service_, cq_.get(), &stubs_);
+    new CallData(&service_, cq_.get(), &stubs_, &threadpool);
     void* tag;  // uniquely identifies a request.
     bool ok;
     while (true) {
@@ -269,6 +274,74 @@ class StoreImpl final : public Store::AsyncService{
   std::unique_ptr<Server> server_;
   std::vector<string> vendorAddresses;
   std::vector<std::unique_ptr<Vendor::Stub>> stubs_;
+  ThreadPool threadpool;
+};
+
+class ThreadPool {
+  ThreadPool() {
+
+  } 
+  public:
+    void Start(uint32_t n_threads) {
+      uint32_t num_threads = std::thread::hardware_concurrency(); // Max # of threads the system supports
+      num_threads = std::min(num_threads, n_threads);
+      threads.resize(num_threads);
+
+      for (uint32_t i = 0; i < num_threads; i++) {
+          threads.at(i) = std::thread(ThreadLoop);
+      }
+    }
+    void QueueJob(std::function<void()>& job) {
+      {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        jobs.push(job);
+      }
+      mutex_condition.notify_one();
+    }
+    void Stop() {
+      {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        should_terminate = true;
+      }
+      mutex_condition.notify_all();
+      for (std::thread& active_thread : threads) {
+          active_thread.join();
+      }
+      threads.clear();
+    }
+    bool busy() {
+      bool poolbusy;
+      {
+          std::unique_lock<std::mutex> lock(queue_mutex);
+          poolbusy = jobs.empty();
+      }
+      return poolbusy;
+    }
+
+private:
+    void ThreadLoop() {
+      while (true) {
+        std::function<void()> job;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            mutex_condition.wait(lock, [this] {
+                return !jobs.empty() || should_terminate;
+            });
+            if (should_terminate) {
+                return;
+            }
+            job = jobs.front();
+            jobs.pop();
+        }
+        job();
+      }
+    }
+
+    bool should_terminate = false;           // Tells threads to stop looking for jobs
+    std::mutex queue_mutex;                  // Prevents data races to the job queue
+    std::condition_variable mutex_condition; // Allows threads to wait on new jobs or termination 
+    std::vector<std::thread> threads;
+    std::queue<std::function<void()>> jobs;
 };
 
 int main(int argc, char** argv) {
