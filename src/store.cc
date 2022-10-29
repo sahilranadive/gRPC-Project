@@ -123,7 +123,8 @@ class StoreImpl final : public Store::AsyncService{
 
         // The actual processing.
         
-        threadpool_.QueueJob(&makeAsyncClientCalls);
+
+        threadpool_->QueueJob(&makeAsyncClientCalls);
         //makeAsyncClientCalls();
         // And we are done! Let the gRPC runtime know we've finished, using the
         // memory address of this instance as the uniquely identifying tag for
@@ -194,7 +195,7 @@ class StoreImpl final : public Store::AsyncService{
 
     void makeAsyncClientCalls()
     {
-       std::thread::id this_id = std::this_thread::get_id();
+      std::thread::id this_id = std::this_thread::get_id();
       cout<<"I am thread: "<<this_id<<endl;
       std::thread thread_ = std::thread(&CallData::AsyncCompleteRpc, this);
       std::string  product_name = request_.product_name();
@@ -291,7 +292,7 @@ class ThreadPool {
           threads.at(i) = std::thread(ThreadLoop);
       }
     }
-    void QueueJob(std::function<void()>& job) {
+    void QueueJob(const std::function<void()>& job) {
       {
         std::unique_lock<std::mutex> lock(queue_mutex);
         jobs.push(job);
