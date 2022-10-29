@@ -4,6 +4,8 @@
 #include <grpc++/grpc++.h>
 #include "store.grpc.pb.h"
 #include "vendor.grpc.pb.h"
+#include <fstream>
+#include <thread>
 
 using grpc::Server;
 using grpc::ServerAsyncResponseWriter;
@@ -11,6 +13,8 @@ using grpc::ServerBuilder;
 using grpc::ServerCompletionQueue;
 using grpc::ServerContext;
 using grpc::Status;
+using grpc::Channel;
+using grpc::ClientAsyncResponseReader;
 
 // not sure if we need these
 using vendor::BidQuery;
@@ -20,6 +24,8 @@ using store::ProductQuery;
 using store::ProductReply;
 using store::ProductInfo;
 using store::Store;
+using grpc::CompletionQueue;
+using grpc::ClientContext;
 
 using namespace std;
 
@@ -30,9 +36,36 @@ class StoreImpl final : public Store::AsyncService{
 		// Always shutdown the completion queue after the server.
 		cq_->Shutdown();
 	}
+
+  int getVendorAddresses(std::string filename)
+  {
+    std::ifstream myfile (filename);
+    if (myfile.is_open()) {
+      std::string v_addr;
+      while (getline(myfile, v_addr)) {
+        vendorAddresses.push_back(v_addr);
+      }
+      myfile.close();
+    }
+    else
+      return -1;
+    return 0;
+  }
 	
 	void Run() {
-    std::string server_address("0.0.0.0:50051");
+    std::string server_address("0.0.0.0:50050");
+
+    int errCode = getVendorAddresses("vendor_addresses.txt"); //harcoded filename for now
+    if(errCode == -1)
+    {
+      std::cout<<"Could not get vendor addresses\n";
+      return;
+    }
+    for(auto vendorAddr: vendorAddresses)
+    {
+      std::shared_ptr<Channel> channel = grpc::CreateChannel(vendorAddr, grpc::InsecureChannelCredentials());
+      stubs_.push_back(Vendor::NewStub(channel));
+    }
 
     ServerBuilder builder;
     // Listen on the given address without any authentication mechanism.
@@ -58,8 +91,8 @@ class StoreImpl final : public Store::AsyncService{
     // Take in the "service" instance (in this case representing an asynchronous
     // server) and the completion queue "cq" used for asynchronous communication
     // with the gRPC runtime.
-    CallData(Store::AsyncService* service, ServerCompletionQueue* cq)
-        : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE) {
+    CallData(Store::AsyncService* service, ServerCompletionQueue* cq,std::vector<std::unique_ptr<Vendor::Stub>> *stubs)
+        : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE), stubs_(stubs) {
       // Invoke the serving logic right away.
       Proceed();
     }
@@ -80,21 +113,22 @@ class StoreImpl final : public Store::AsyncService{
         // Spawn a new CallData instance to serve new clients while we process
         // the one for this CallData. The instance will deallocate itself as
         // part of its FINISH state.
-        new CallData(service_, cq_);
+        new CallData(service_, cq_, stubs_);
 
         // The actual processing.
         
-
+        makeAsyncClientCalls();
         // And we are done! Let the gRPC runtime know we've finished, using the
         // memory address of this instance as the uniquely identifying tag for
         // the event.
         status_ = FINISH;
-		//store::ProductReply productReply;
-		store::ProductInfo* productInfo = reply_.add_products();
-		productInfo->set_price(1.0);
-		productInfo->set_vendor_id("1");
+
+        //store::ProductReply productReply;
+        store::ProductInfo* productInfo = reply_.add_products();
+        productInfo->set_price(1.0);
+        productInfo->set_vendor_id("1");
 		
-		cout<<"here"<<endl;
+		    cout<<"here"<<endl;
         responder_.Finish(reply_, Status::OK, this);
       } else {
         GPR_ASSERT(status_ == FINISH);
@@ -103,10 +137,95 @@ class StoreImpl final : public Store::AsyncService{
       }
     }
 
+    void AsyncCompleteRpc() {
+      void* got_tag;
+      bool ok = false;
+      int numVendors = stubs_->size();
+
+      // Block until the next result is available in the completion queue "cq".
+      while (numVendors>0 && ccq_.Next(&got_tag, &ok)) {
+        // The tag in this example is the memory location of the call object
+        AsyncClientCall* call = static_cast<AsyncClientCall*>(got_tag);
+
+        // Verify that the request was completed successfully. Note that "ok"
+        // corresponds solely to the request for updates introduced by Finish().
+        GPR_ASSERT(ok);
+
+        if (call->status.ok())
+        {
+          store::ProductInfo* productInfo = reply_.add_products();
+          productInfo->set_price(call->bidReply.price());
+          productInfo->set_vendor_id(call->bidReply.vendor_id());
+          cout<<"reply got\n";
+          numVendors--;
+        }
+
+        // Once we're complete, deallocate the call object.
+        delete call;
+      }
+    }
+
+    void SendRequestToVendor(std::string product_name, std::unique_ptr<Vendor::Stub> &stub) {
+      cout<<"request sent\n";
+      // Data we are sending to the server.
+      BidQuery bidQueryRequest;
+      bidQueryRequest.set_product_name(product_name);
+
+      // Call object to store rpc data
+      AsyncClientCall* call = new AsyncClientCall;
+
+      // stub_->PrepareAsyncSayHello() creates an RPC object, returning
+      // an instance to store in "call" but does not actually start the RPC
+      // Because we are using the asynchronous API, we need to hold on to
+      // the "call" instance in order to get updates on the ongoing RPC.
+      call->response_reader = stub->PrepareAsyncgetProductBid(&call->context, bidQueryRequest, &ccq_);
+
+      // StartCall initiates the RPC call
+      call->response_reader->StartCall();
+
+      // Request that, upon completion of the RPC, "reply" be updated with the
+      // server's response; "status" with the indication of whether the operation
+      // was successful. Tag the request with the memory address of the call
+      // object.
+      call->response_reader->Finish(&call->bidReply, &call->status, (void*)call);
+    }
+
+    void makeAsyncClientCalls()
+    {
+      std::thread thread_ = std::thread(&CallData::AsyncCompleteRpc, this);
+      std::string  product_name = request_.product_name();
+      for(auto stub=stubs_->begin();stub!=stubs_->end();stub++)
+      {
+        SendRequestToVendor(product_name, *stub);
+      }
+      thread_.join(); 
+    }
+
    private:
+
+   struct AsyncClientCall {
+      // Container for the data we expect from the server.
+      BidReply bidReply;
+
+      // Context for the client. It could be used to convey extra information to
+      // the server and/or tweak certain RPC behaviors.
+      ClientContext context;
+
+      // Storage for the status of the RPC upon completion.
+      Status status;
+
+      std::unique_ptr<ClientAsyncResponseReader<BidReply>> response_reader;
+    };
+
     // The means of communication with the gRPC runtime for an asynchronous
     // server.
     Store::AsyncService* service_;
+
+    // Completion queue for vender-store communication
+    CompletionQueue ccq_;
+    // Stubs for vendors
+    std::vector<std::unique_ptr<Vendor::Stub>>* stubs_;
+
     // The producer-consumer queue where for asynchronous server notifications.
     ServerCompletionQueue* cq_;
     // Context for the rpc, allowing to tweak aspects of it such as the use
@@ -130,7 +249,7 @@ class StoreImpl final : public Store::AsyncService{
   // This can be run in multiple threads if needed.
   void HandleRpcs() {
     // Spawn a new CallData instance to serve new clients.
-    new CallData(&service_, cq_.get());
+    new CallData(&service_, cq_.get(), &stubs_);
     void* tag;  // uniquely identifies a request.
     bool ok;
     while (true) {
@@ -148,6 +267,8 @@ class StoreImpl final : public Store::AsyncService{
   std::unique_ptr<ServerCompletionQueue> cq_;
   Store::AsyncService service_;
   std::unique_ptr<Server> server_;
+  std::vector<string> vendorAddresses;
+  std::vector<std::unique_ptr<Vendor::Stub>> stubs_;
 };
 
 int main(int argc, char** argv) {
