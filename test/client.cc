@@ -1,5 +1,6 @@
 #include <memory>
 #include <stdlib.h> 
+#include <iostream>
 
 #include <grpc++/grpc++.h>
 
@@ -14,6 +15,7 @@ using grpc::Status;
 using store::ProductQuery;
 using store::ProductReply;
 using store::ProductInfo;
+using namespace std;
 
 class StoreClient {
 
@@ -57,6 +59,7 @@ bool StoreClient::getProducts(const ProductSpec& product_spec, ProductQueryResul
     bid.price_ = result.price();
     bid.vendor_id_ = result.vendor_id();
     query_result.bids_.push_back(bid);
+    cout<<"CLIENT: bid_price "<<bid.price_<<endl;
   }
   return true;
 }
