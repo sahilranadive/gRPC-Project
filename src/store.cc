@@ -6,7 +6,6 @@
 #include "store.grpc.pb.h"
 #include "vendor.grpc.pb.h"
 #include <fstream>
-#include <thread>
 
 using grpc::Server;
 using grpc::ServerAsyncResponseWriter;
@@ -30,7 +29,6 @@ using grpc::ClientContext;
 
 using namespace std;
 
-class ThreadPool;
 
 class StoreImpl final : public Store::AsyncService{ 
 	public:
@@ -122,9 +120,8 @@ class StoreImpl final : public Store::AsyncService{
         new CallData(service_, cq_, stubs_, threadpool_);
 
         // The actual processing.
-        
-
-        threadpool_->QueueJob(&makeAsyncClientCalls);
+        cout<<"here1"<<endl;
+        threadpool_->QueueJob([this](){this->makeAsyncClientCalls();});
         //makeAsyncClientCalls();
         // And we are done! Let the gRPC runtime know we've finished, using the
         // memory address of this instance as the uniquely identifying tag for
@@ -278,76 +275,9 @@ class StoreImpl final : public Store::AsyncService{
   ThreadPool threadpool;
 };
 
-class ThreadPool {
-  ThreadPool() {
-
-  } 
-  public:
-    void Start(uint32_t n_threads) {
-      uint32_t num_threads = std::thread::hardware_concurrency(); // Max # of threads the system supports
-      num_threads = std::min(num_threads, n_threads);
-      threads.resize(num_threads);
-
-      for (uint32_t i = 0; i < num_threads; i++) {
-          threads.at(i) = std::thread(ThreadLoop);
-      }
-    }
-    void QueueJob(const std::function<void()>& job) {
-      {
-        std::unique_lock<std::mutex> lock(queue_mutex);
-        jobs.push(job);
-      }
-      mutex_condition.notify_one();
-    }
-    void Stop() {
-      {
-        std::unique_lock<std::mutex> lock(queue_mutex);
-        should_terminate = true;
-      }
-      mutex_condition.notify_all();
-      for (std::thread& active_thread : threads) {
-          active_thread.join();
-      }
-      threads.clear();
-    }
-    bool busy() {
-      bool poolbusy;
-      {
-          std::unique_lock<std::mutex> lock(queue_mutex);
-          poolbusy = jobs.empty();
-      }
-      return poolbusy;
-    }
-
-private:
-    void ThreadLoop() {
-      while (true) {
-        std::function<void()> job;
-        {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            mutex_condition.wait(lock, [this] {
-                return !jobs.empty() || should_terminate;
-            });
-            if (should_terminate) {
-                return;
-            }
-            job = jobs.front();
-            jobs.pop();
-        }
-        job();
-      }
-    }
-
-    bool should_terminate = false;           // Tells threads to stop looking for jobs
-    std::mutex queue_mutex;                  // Prevents data races to the job queue
-    std::condition_variable mutex_condition; // Allows threads to wait on new jobs or termination 
-    std::vector<std::thread> threads;
-    std::queue<std::function<void()>> jobs;
-};
-
 int main(int argc, char** argv) {
 	StoreImpl server;
-  	server.Run();
+  server.Run();
 	std::cout << "I 'm not ready yet!" << std::endl;
 	return EXIT_SUCCESS;
 }
