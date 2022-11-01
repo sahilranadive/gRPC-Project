@@ -57,7 +57,7 @@ class StoreImpl final : public Store::AsyncService{
 	void Run() {
     std::string server_address("0.0.0.0:50050");
     
-    threadpool.Start(2);
+    threadpool.Start(1);
 
     int errCode = getVendorAddresses("vendor_addresses.txt"); //harcoded filename for now
     if(errCode == -1)
@@ -126,10 +126,7 @@ class StoreImpl final : public Store::AsyncService{
         // And we are done! Let the gRPC runtime know we've finished, using the
         // memory address of this instance as the uniquely identifying tag for
         // the event.
-        status_ = FINISH;
-
-		    cout<<"here"<<endl;
-        responder_.Finish(reply_, Status::OK, this);
+        
       } else {
         GPR_ASSERT(status_ == FINISH);
         // Once in the FINISH state, deallocate ourselves (CallData).
@@ -166,7 +163,7 @@ class StoreImpl final : public Store::AsyncService{
     }
 
     void SendRequestToVendor(std::string product_name, std::unique_ptr<Vendor::Stub> &stub) {
-      cout<<"request sent\n";
+      cout<<"request sent for product: "<<product_name<<endl;
       // Data we are sending to the server.
       BidQuery bidQueryRequest;
       bidQueryRequest.set_product_name(product_name);
@@ -201,6 +198,10 @@ class StoreImpl final : public Store::AsyncService{
         SendRequestToVendor(product_name, *stub);
       }
       thread_.join(); 
+      status_ = FINISH;
+
+      cout<<"here"<<endl;
+      responder_.Finish(reply_, Status::OK, this);
     }
 
    private:
