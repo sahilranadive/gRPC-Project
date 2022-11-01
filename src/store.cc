@@ -54,12 +54,12 @@ class StoreImpl final : public Store::AsyncService{
     return 0;
   }
 	
-	void Run() {
-    std::string server_address("0.0.0.0:50050");
+	void Run(string vendor_addresses_path_, string server_address_, int max_threads) {
+    std::string server_address(server_address_);
     
-    threadpool.Start(1);
+    threadpool.Start(max_threads);
 
-    int errCode = getVendorAddresses("vendor_addresses.txt"); //harcoded filename for now
+    int errCode = getVendorAddresses(vendor_addresses_path_); //harcoded filename for now
     if(errCode == -1)
     {
       std::cout<<"Could not get vendor addresses\n";
@@ -277,8 +277,13 @@ class StoreImpl final : public Store::AsyncService{
 };
 
 int main(int argc, char** argv) {
+  string vendor_addresses_path, server_address;
+  int max_threads;
+  vendor_addresses_path = argv[1];
+  server_address = argv[2];
+  max_threads = stoi(argv[3]);
 	StoreImpl server;
-  server.Run();
+  server.Run(vendor_addresses_path, server_address, max_threads);
 	std::cout << "I 'm not ready yet!" << std::endl;
 	return EXIT_SUCCESS;
 }
