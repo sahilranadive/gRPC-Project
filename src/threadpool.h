@@ -40,14 +40,6 @@ class ThreadPool {
       }
       threads.clear();
     }
-    bool busy() {
-      bool poolbusy;
-      {
-          std::unique_lock<std::mutex> lock(queue_mutex);
-          poolbusy = jobs.empty();
-      }
-      return poolbusy;
-    }
 
     void ThreadLoop() {
       while (true) {

@@ -16,7 +16,6 @@ using grpc::Status;
 using grpc::Channel;
 using grpc::ClientAsyncResponseReader;
 
-// not sure if we need these
 using vendor::BidQuery;
 using vendor::BidReply;
 using vendor::Vendor;
@@ -34,8 +33,9 @@ class StoreImpl final : public Store::AsyncService{
 	public:
 	~StoreImpl() {
 		server_->Shutdown();
-		// Always shutdown the completion queue after the server.
+		// Shutdown the completion queue after the server.
 		cq_->Shutdown();
+    // Stop the threadpool
     threadpool.Stop();
 	}
 
@@ -50,8 +50,8 @@ class StoreImpl final : public Store::AsyncService{
       myfile.close();
     }
     else
-      return -1;
-    return 0;
+      return -1; // failure
+    return 0; // success
   }
 	
 	void Run(string vendor_addresses_path_, string server_address_, int max_threads) {
@@ -59,28 +59,26 @@ class StoreImpl final : public Store::AsyncService{
     
     threadpool.Start(max_threads);
 
-    int errCode = getVendorAddresses(vendor_addresses_path_); //harcoded filename for now
+    int errCode = getVendorAddresses(vendor_addresses_path_); 
     if(errCode == -1)
     {
       std::cout<<"Could not get vendor addresses\n";
       return;
     }
-    for(auto vendorAddr: vendorAddresses)
+    for(auto vendorAddr: vendorAddresses) // stubs for all the vendors are created once when server is started
     {
       std::shared_ptr<Channel> channel = grpc::CreateChannel(vendorAddr, grpc::InsecureChannelCredentials());
       stubs_.push_back(Vendor::NewStub(channel));
     }
 
     ServerBuilder builder;
-    // Listen on the given address without any authentication mechanism.
+    // Listen on the server address without any authentication mechanism
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-    // Register "service_" as the instance through which we'll communicate with
-    // clients. In this case it corresponds to an *asynchronous* service.
+    // service_ corresponds to an asynchronous service
     builder.RegisterService(&service_);
-    // Get hold of the completion queue used for the asynchronous communication
-    // with the gRPC runtime.
+    // Server completion queue (one common queue for all clients)
     cq_ = builder.AddCompletionQueue();
-    // Finally assemble the server.
+    // Assemble the server.
     server_ = builder.BuildAndStart();
     std::cout << "Server listening on " << server_address << std::endl;
 
@@ -89,12 +87,12 @@ class StoreImpl final : public Store::AsyncService{
   }
 
   private:
-  // Class encompasing the state and logic needed to serve a request.
+  // Class encompasing the state (minimal) and logic needed to serve a request.
   class CallData {
    public:
     // Take in the "service" instance (in this case representing an asynchronous
-    // server) and the completion queue "cq" used for asynchronous communication
-    // with the gRPC runtime.
+    // server), the completion queue "cq" used for asynchronous communication
+    // with the gRPC runtime, the stubs for all the vendors and the threadpool instance.
     CallData(Store::AsyncService* service, ServerCompletionQueue* cq,std::vector<std::unique_ptr<Vendor::Stub>> *stubs, ThreadPool *threadpool)
         : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE), stubs_(stubs), threadpool_(threadpool) {
       // Invoke the serving logic right away.
@@ -106,10 +104,10 @@ class StoreImpl final : public Store::AsyncService{
         // Make this instance progress to the PROCESS state.
         status_ = PROCESS;
 
-        // As part of the initial CREATE state, we *request* that the system
-        // start processing SayHello requests. In this request, "this" acts are
+        // As part of the initial CREATE state, we *request* that the system wait
+        // for a getProducts RPC event. In this request, "this" acts as 
         // the tag uniquely identifying the request (so that different CallData
-        // instances can serve different requests concurrently), in this case
+        // instances can serve different requests concurrently); in this case
         // the memory address of this CallData instance.
         service_->RequestgetProducts(&ctx_, &request_, &responder_, cq_, cq_,
                                   this);
@@ -120,12 +118,7 @@ class StoreImpl final : public Store::AsyncService{
         new CallData(service_, cq_, stubs_, threadpool_);
 
         // The actual processing.
-        cout<<"here1"<<endl;
         threadpool_->QueueJob([this](){this->makeAsyncClientCalls();});
-        //makeAsyncClientCalls();
-        // And we are done! Let the gRPC runtime know we've finished, using the
-        // memory address of this instance as the uniquely identifying tag for
-        // the event.
         
       } else {
         GPR_ASSERT(status_ == FINISH);
@@ -139,13 +132,12 @@ class StoreImpl final : public Store::AsyncService{
       bool ok = false;
       int numVendors = stubs_->size();
 
-      // Block until the next result is available in the completion queue "cq".
+      // Block until the next result is available in the completion queue ccq_ and there are still replies from vendors to be read
       while (numVendors>0 && ccq_.Next(&got_tag, &ok)) {
         // The tag in this example is the memory location of the call object
         AsyncClientCall* call = static_cast<AsyncClientCall*>(got_tag);
 
-        // Verify that the request was completed successfully. Note that "ok"
-        // corresponds solely to the request for updates introduced by Finish().
+        // Verify that the request was completed successfully.
         GPR_ASSERT(ok);
 
         if (call->status.ok())
@@ -153,7 +145,6 @@ class StoreImpl final : public Store::AsyncService{
           store::ProductInfo* productInfo = reply_.add_products();
           productInfo->set_price(call->bidReply.price());
           productInfo->set_vendor_id(call->bidReply.vendor_id());
-          cout<<"reply got\n";
           numVendors--;
         }
 
@@ -163,7 +154,6 @@ class StoreImpl final : public Store::AsyncService{
     }
 
     void SendRequestToVendor(std::string product_name, std::unique_ptr<Vendor::Stub> &stub) {
-      cout<<"request sent for product: "<<product_name<<endl;
       // Data we are sending to the server.
       BidQuery bidQueryRequest;
       bidQueryRequest.set_product_name(product_name);
@@ -171,7 +161,7 @@ class StoreImpl final : public Store::AsyncService{
       // Call object to store rpc data
       AsyncClientCall* call = new AsyncClientCall;
 
-      // stub_->PrepareAsyncSayHello() creates an RPC object, returning
+      // stub->PrepareAsyncgetProductBid() creates an RPC object, returning
       // an instance to store in "call" but does not actually start the RPC
       // Because we are using the asynchronous API, we need to hold on to
       // the "call" instance in order to get updates on the ongoing RPC.
@@ -189,18 +179,21 @@ class StoreImpl final : public Store::AsyncService{
 
     void makeAsyncClientCalls()
     {
-      std::thread::id this_id = std::this_thread::get_id();
-      cout<<"I am thread: "<<this_id<<endl;
+      // Starting up the thread to wait for replies from the vendors
       std::thread thread_ = std::thread(&CallData::AsyncCompleteRpc, this);
       std::string  product_name = request_.product_name();
+      // Sending requests to all vendors
       for(auto stub=stubs_->begin();stub!=stubs_->end();stub++)
       {
         SendRequestToVendor(product_name, *stub);
       }
+      // Wait till all replies have been handled
       thread_.join(); 
-      status_ = FINISH;
 
-      cout<<"here"<<endl;
+      // Let the gRPC runtime know we've finished, using the
+      // memory address of the CallData instance as the uniquely identifying tag for
+      // the event.
+      status_ = FINISH;
       responder_.Finish(reply_, Status::OK, this);
     }
 
@@ -244,13 +237,11 @@ class StoreImpl final : public Store::AsyncService{
     // The means to get back to the client.
     ServerAsyncResponseWriter<ProductReply> responder_;
 
-    // Let's implement a tiny state machine with the following states.
     enum CallStatus { CREATE, PROCESS, FINISH };
     CallStatus status_;  // The current serving state.
     ThreadPool* threadpool_;
   }; // END of Call Data Class
 
-  // This can be run in multiple threads if needed.
   void HandleRpcs() {
     // Spawn a new CallData instance to serve new clients.
     new CallData(&service_, cq_.get(), &stubs_, &threadpool);
@@ -260,8 +251,6 @@ class StoreImpl final : public Store::AsyncService{
       // Block waiting to read the next event from the completion queue. The
       // event is uniquely identified by its tag, which in this case is the
       // memory address of a CallData instance.
-      // The return value of Next should always be checked. This return value
-      // tells us whether there is any kind of event or cq_ is shutting down.
       GPR_ASSERT(cq_->Next(&tag, &ok));
       GPR_ASSERT(ok);
       static_cast<CallData*>(tag)->Proceed();
@@ -284,7 +273,6 @@ int main(int argc, char** argv) {
   max_threads = stoi(argv[3]);
 	StoreImpl server;
   server.Run(vendor_addresses_path, server_address, max_threads);
-	std::cout << "I 'm not ready yet!" << std::endl;
 	return EXIT_SUCCESS;
 }
 
